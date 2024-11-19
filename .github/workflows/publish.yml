@@ -14,16 +14,16 @@ on:
         default: 'true'
 jobs:
   publish-nuget:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-24.04
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
       with:
         ref: "${{ github.event.inputs.ref }}"
         fetch-depth: '0' # all
-    - name: Setup .NET Core 5.0
-      uses: actions/setup-dotnet@v1
+    - name: Setup .NET Core 8.0
+      uses: actions/setup-dotnet@v4
       with:
-        dotnet-version: '5.0.x'
+        dotnet-version: '8.0.x'
     - name: Setup gitversion
       run: dotnet tool install --global GitVersion.Tool
     - name: Calculate version
@@ -35,10 +35,10 @@ jobs:
       run: dotnet restore DynamicExpresso.sln
     - name: Build
       run: dotnet build DynamicExpresso.sln --no-restore -c Release /p:Version=${{steps.calc_version.outputs.PROJECT_VERSION}}
-    - name: Test .net core 5.0
-      run: dotnet test DynamicExpresso.sln --no-build --no-restore -c Release /p:Version=${{steps.calc_version.outputs.PROJECT_VERSION}} --verbosity normal -f netcoreapp5.0
+    - name: Test .net core 8.0
+      run: dotnet test DynamicExpresso.sln --no-build --no-restore -c Release /p:Version=${{steps.calc_version.outputs.PROJECT_VERSION}} --verbosity normal -f net8.0
     - name: Setup nuget sources
-      run: dotnet nuget add source --name github "https://nuget.pkg.github.com/davideicardi/index.json"
+      run: dotnet nuget add source --name github "https://nuget.pkg.github.com/dynamicexpresso/index.json"
     - name: Pack
       run: dotnet pack DynamicExpresso.sln --no-build --no-restore -c Release /p:Version=${{steps.calc_version.outputs.PROJECT_VERSION}} -p:IncludeSymbols=true -p:SymbolPackageFormat=snupkg
     - name: Publish to github

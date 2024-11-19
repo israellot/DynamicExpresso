@@ -1,8 +1,9 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using DynamicExpresso.Reflection;
+using DynamicExpresso.Resources;
 
 namespace DynamicExpresso
 {
@@ -24,6 +25,14 @@ namespace DynamicExpresso
 
 			if (type == null)
 				throw new ArgumentNullException(nameof(type));
+
+			if (type.IsGenericType && !type.IsGenericTypeDefinition)
+			{
+				var genericType = type.GetGenericTypeDefinition();
+				var genericTypeName = genericType.Name.Substring(0, genericType.Name.IndexOf('`'));
+				genericTypeName += $"<{new string(',', genericType.GetGenericArguments().Length - 1)}>";
+				throw new ArgumentException(string.Format(ErrorMessages.GenericTypeReference, genericTypeName));
+			}
 
 			Type = type;
 			Name = name;

@@ -177,7 +177,7 @@ namespace DynamicExpresso.UnitTest
 			result = target.Eval<char>("str.WithSeveralParams((c, i) => c == 'd')");
 			Assert.AreEqual('d', result);
 
-			result = target.Eval<char>("str.WithSeveralParams((c, i, str) => c == 'd')");
+			result = target.Eval<char>("str.WithSeveralParams((c, i, str2) => c == 'd')");
 			Assert.AreEqual('d', result);
 		}
 
@@ -248,12 +248,19 @@ namespace DynamicExpresso.UnitTest
 		public void Two_lambda_parameters()
 		{
 			var target = new Interpreter(_options);
+			target.Reference(typeof(WithProp));
+
 			var list = new List<string> { "aaaaa", "bbbb", "ccc", "ddd" };
 			target.SetVariable("myList", list);
-			var results = target.Eval<Dictionary<string, int>>("myList.ToDictionary(str => str, str => str.Length)");
+			var results = target.Eval<Dictionary<string, int>>("myList.ToDictionary(str => new WithProp { MyStr = str }.MyStr, str => str.Length)");
 
 			Assert.AreEqual(4, results.Count);
-			Assert.AreEqual(list.ToDictionary(str => str, str => str.Length), results);
+			Assert.AreEqual(list.ToDictionary(str => new WithProp { MyStr = str }.MyStr, str => str.Length), results);
+		}
+
+		private class WithProp
+		{
+			public string MyStr { get; set; }
 		}
 
 		[Test]
@@ -283,6 +290,24 @@ namespace DynamicExpresso.UnitTest
 		}
 
 		[Test]
+		public void Lambda_with_parameter_AsCompiledLambda()
+		{
+			var target = new Interpreter(InterpreterOptions.Default | InterpreterOptions.LambdaExpressions);
+			var parm = new Parameter("x", 1);
+			var list = new Parameter("list", new[] { 1, 2, 3 });
+			var listLamba = target.Parse("list.Where(n => n > x)", list, parm).Compile<Func<int[], int, IEnumerable<int>>>();
+			var result = listLamba(list.Value as int[], 2);
+			Assert.AreEqual(new[] { 3 }, result);
+
+			var listInt = listLamba(list.Value as int[], 1);
+			Assert.AreEqual(new[] { 2, 3 }, listInt);
+
+			// ensure the parameters can be reused with different values
+			listInt = target.Eval<IEnumerable<int>>("list.Where(n => n > x)", new Parameter("list", new[] { 2, 4, 5 }), new Parameter("x", 2));
+			Assert.AreEqual(new[] { 4, 5 }, listInt);
+		}
+
+		[Test]
 		public void Lambda_with_parameter_2()
 		{
 			var target = new Interpreter(InterpreterOptions.Default | InterpreterOptions.LambdaExpressions);
@@ -299,6 +324,308 @@ namespace DynamicExpresso.UnitTest
 
 			var listInt = target.Eval<IEnumerable<int>>("list.Where(n => n > x)");
 			Assert.AreEqual(new[] { 2, 3 }, listInt);
+		}
+
+		public class NestedLambdaTestClass
+		{
+			public NestedLambdaTestClass()
+			{
+			}
+
+			public List<NestedLambdaTestClass> Children
+			{
+				get; set;
+			}
+
+			public string Name
+			{
+				get; set;
+			}
+
+			// TODO
+			// Add support for non generics with our lambda evaluation
+			// The below fails to compile
+			// public string GetChildrenIdentifiers<T>(Func<NestedLambdaTestClass, T> f)
+			public string GetChildrenIdentifiers<T>(Func<NestedLambdaTestClass, T> f)
+			{
+				if (Children == null)
+				{
+					return string.Empty;
+				}
+				return string.Join(",", Children.Select(f));
+			}
+		}
+
+		[Test]
+		public void Lambda_WithMultipleNestedExpressions()
+		{
+			var root = BuildNestedTestClassHierarchy();
+			var expectedResult = root.GetChildrenIdentifiers(
+				// root
+				l1 => l1.Name + l1.GetChildrenIdentifiers(
+					// level 2, references my parameter, plus original lamda
+					l2 => l2.Name + l1.Name + l2.GetChildrenIdentifiers(
+						// level 3, references my parameter, plus parameter from l1 lamda
+						l3 => l3.Name + l2.Name + l3.GetChildrenIdentifiers(
+							// level 4, references my parameter, plus all parameters that have been used 
+							l4 => l4.Name + l2.Name + l3.Name + l1.Name + root.Name)
+							)));
+
+			var target = new Interpreter(InterpreterOptions.Default | InterpreterOptions.LambdaExpressions);
+
+			var evalResult = target.Eval<string>(@"root.GetChildrenIdentifiers(
+				l1 => l1.Name + l1.GetChildrenIdentifiers(
+					l2 => l2.Name + l1.Name + l2.GetChildrenIdentifiers(
+						l3 => l3.Name + l2.Name + l3.GetChildrenIdentifiers(
+							l4 => l4.Name + l2.Name + l3.Name + l1.Name + root.Name)
+							)))", new Parameter(nameof(root), root));
+			Assert.AreEqual(expectedResult, evalResult);
+		}
+
+		[Test]
+		public void Lambda_SameParameterNameInDifferentLambdas()
+		{
+			var root = BuildNestedTestClassHierarchy();
+			var expectedResult = root.GetChildrenIdentifiers(
+				// root
+				l1 => l1.Name + l1.GetChildrenIdentifiers(
+					// level 2, references my parameter, plus original lamda
+					l2 => l2.Name + l1.Name + l2.GetChildrenIdentifiers(l3 => l2.Name) + l2.GetChildrenIdentifiers(
+						// level 3, references my parameter, plus parameter from l1 lamda
+						l3 => l3.Name + l2.Name + l3.GetChildrenIdentifiers(
+							// level 4, references my parameter, plus all parameters that have been used 
+							l4 => l4.Name + l2.Name + l3.Name + l1.Name + root.Name)
+							)));
+
+			var target = new Interpreter(InterpreterOptions.Default | InterpreterOptions.LambdaExpressions);
+
+			var evalResult = target.Eval<string>(@"root.GetChildrenIdentifiers(
+				l1 => l1.Name + l1.GetChildrenIdentifiers(
+					l2 => l2.Name + l1.Name + l2.GetChildrenIdentifiers(l3 => l2.Name) + + l2.GetChildrenIdentifiers(
+						l3 => l3.Name + l2.Name + l3.GetChildrenIdentifiers(
+							l4 => l4.Name + l2.Name + l3.Name + l1.Name + root.Name)
+							)))", new Parameter(nameof(root), root));
+			Assert.AreEqual(expectedResult, evalResult);
+		}
+
+		[Test]
+		public void Lambda_CannotUseDuplicateParameterInSubLambda()
+		{
+			var target = new Interpreter(InterpreterOptions.Default | InterpreterOptions.LambdaExpressions);
+			Assert.Throws<ParseException>(() => target.Parse(@"root.GetChildrenIdentifiers(
+				l1 => l1.Name + l1.GetChildrenIdentifiers(
+					l2 => l2.Name + l1.Name + l2.GetChildrenIdentifiers(l2 => l2.Name) + l2.GetChildrenIdentifiers(
+						l3 => l3.Name + l2.Name + l3.GetChildrenIdentifiers(
+							l4 => l4.Name + l2.Name + l3.Name + l1.Name + root.Name)
+							)))", new Parameter("root", typeof(NestedLambdaTestClass))));
+		}
+
+		private class Npc
+		{
+			public int Money { get; set; }
+			public void AddMoney(Action<Npc, int, string> action)
+			{
+				action(this, 10, "test");
+			}
+		}
+
+		[Test]
+		public void Lambda_ShouldAllowActionLambda()
+		{
+			var target = new Interpreter(InterpreterOptions.LambdaExpressions);
+
+			var list = new List<Npc>() { new Npc { Money = 10 } };
+			target.SetVariable("list", list);
+
+			var result = target.Eval(@"list.ForEach(n => n.Money = 5)");
+			Assert.IsNull(result);
+			Assert.AreEqual(5, list[0].Money);
+		}
+
+		[Test]
+		public void Lambda_MultipleActionLambdaParameters()
+		{
+			var target = new Interpreter(InterpreterOptions.LambdaExpressions);
+
+			var npc = new Npc { Money = 10 };
+			target.SetVariable("npc", npc);
+
+			var result = target.Eval(@"npc.AddMoney((n, i, str) => n.Money = i + str.Length)");
+			Assert.IsNull(result);
+			Assert.AreEqual(14, npc.Money);
+		}
+
+		private static NestedLambdaTestClass BuildNestedTestClassHierarchy()
+		{
+			return new NestedLambdaTestClass()
+			{
+				Name = "Root",
+				Children = new List<NestedLambdaTestClass>()
+				{
+					new NestedLambdaTestClass()
+					{
+						Name = "A",
+						Children = new List<NestedLambdaTestClass>()
+						{
+							new NestedLambdaTestClass()
+							{
+								Name = "B",
+								Children = new List<NestedLambdaTestClass>()
+								{
+									new NestedLambdaTestClass()
+									{
+										Name = "C",
+								Children = new List<NestedLambdaTestClass>()
+								{
+									new NestedLambdaTestClass()
+									{
+										Name = "C"
+									},
+									new NestedLambdaTestClass()
+									{
+										Name = "F"
+									}
+								}
+									},
+									new NestedLambdaTestClass()
+									{
+										Name = "F",
+								Children = new List<NestedLambdaTestClass>()
+								{
+									new NestedLambdaTestClass()
+									{
+										Name = "C"
+									},
+									new NestedLambdaTestClass()
+									{
+										Name = "F"
+									}
+								}
+									}
+								}
+							},
+							new NestedLambdaTestClass()
+							{
+								Name = "D",
+								Children = new List<NestedLambdaTestClass>()
+								{
+									new NestedLambdaTestClass()
+									{
+										Name = "E",
+								Children = new List<NestedLambdaTestClass>()
+								{
+									new NestedLambdaTestClass()
+									{
+										Name = "C"
+									},
+									new NestedLambdaTestClass()
+									{
+										Name = "F"
+									}
+								}
+									},
+									new NestedLambdaTestClass()
+									{
+										Name = "G",
+								Children = new List<NestedLambdaTestClass>()
+								{
+									new NestedLambdaTestClass()
+									{
+										Name = "C"
+									},
+									new NestedLambdaTestClass()
+									{
+										Name = "F"
+									}
+								}
+									}
+								}
+							}
+						}
+					},
+					new NestedLambdaTestClass()
+					{
+						Name = "B",
+						Children = new List<NestedLambdaTestClass>()
+						{
+							new NestedLambdaTestClass()
+							{
+								Name = "B",
+								Children = new List<NestedLambdaTestClass>()
+								{
+									new NestedLambdaTestClass()
+									{
+										Name = "C",
+								Children = new List<NestedLambdaTestClass>()
+								{
+									new NestedLambdaTestClass()
+									{
+										Name = "C"
+									},
+									new NestedLambdaTestClass()
+									{
+										Name = "F"
+									}
+								}
+									},
+									new NestedLambdaTestClass()
+									{
+										Name = "F",
+								Children = new List<NestedLambdaTestClass>()
+								{
+									new NestedLambdaTestClass()
+									{
+										Name = "C"
+									},
+									new NestedLambdaTestClass()
+									{
+										Name = "F"
+									}
+								}
+									}
+								}
+							},
+							new NestedLambdaTestClass()
+							{
+								Name = "D",
+								Children = new List<NestedLambdaTestClass>()
+								{
+									new NestedLambdaTestClass()
+									{
+										Name = "E",
+								Children = new List<NestedLambdaTestClass>()
+								{
+									new NestedLambdaTestClass()
+									{
+										Name = "C"
+									},
+									new NestedLambdaTestClass()
+									{
+										Name = "F",
+								Children = new List<NestedLambdaTestClass>()
+								{
+									new NestedLambdaTestClass()
+									{
+										Name = "C"
+									},
+									new NestedLambdaTestClass()
+									{
+										Name = "F"
+									}
+								}
+									}
+								}
+									},
+									new NestedLambdaTestClass()
+									{
+										Name = "G"
+									}
+								}
+							}
+						}
+					}
+				}
+			};
 		}
 	}
 

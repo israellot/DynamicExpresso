@@ -1,11 +1,12 @@
-using DynamicExpresso.Exceptions;
-using NUnit.Framework;
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Dynamic;
 using System.Linq;
 using System.Reflection;
 using System.Text.RegularExpressions;
+using DynamicExpresso.Exceptions;
+using NUnit.Framework;
 
 // ReSharper disable SpecifyACultureInStringConversionExplicitly
 
@@ -253,7 +254,7 @@ namespace DynamicExpresso.UnitTest
 			Assert.Throws<ParseException>(() => interpreter.Eval("GFunction(arg)"));
 
 			// GFunction1 is used
-			// because gFunc1.Method.GetParameters()[0].HasDefaultValue == true 
+			// because gFunc1.Method.GetParameters()[0].HasDefaultValue == true
 			// and     gFunc2.Method.GetParameters()[0].HasDefaultValue == false
 			Assert.False((bool)interpreter.Eval("GFunction()"));
 		}
@@ -510,7 +511,7 @@ namespace DynamicExpresso.UnitTest
 
 			// case insensivity outside lambda expressions
 			Assert.IsFalse(interpreter.Eval<bool>("dateinthepast > now()")); // identifier
-			Assert.IsTrue(interpreter.Eval<bool>("dateinthepast is datetimeoffset)")); // known type
+			Assert.IsTrue(interpreter.Eval<bool>("dateinthepast is datetimeoffset")); // known type
 			Assert.IsFalse(interpreter.Eval<bool>("dateinthepast.isinfuture()")); // extension method
 
 			// ensure the case insensitivity option is also used in the lambda expression
@@ -533,6 +534,7 @@ namespace DynamicExpresso.UnitTest
 		{
 			public static List<T> Array<T>(IEnumerable<T> collection) => new List<T>(collection);
 			public static List<dynamic> Array(params dynamic[] array) => Array((IEnumerable<dynamic>)array);
+			public static int ParamArrayObjects(params object[] values) => values.Length;
 			public static IEnumerable<dynamic> Select<TSource>(IEnumerable<TSource> collection, string expression) => new List<dynamic>();
 			public static IEnumerable<dynamic> Select(IEnumerable collection, string expression) => new List<dynamic>();
 			public static int Any<T>(IEnumerable<T> collection) => 1;
@@ -554,10 +556,324 @@ namespace DynamicExpresso.UnitTest
 			var result2 = target.Eval<DateTimeKind>("DateTimeKind.Local | DateTimeKind.Utc");
 			Assert.AreEqual((DateTimeKind)3, result2);
 		}
+
+		[Test]
+		public void GitHub_Issue_212()
+		{
+			var target = new Interpreter(InterpreterOptions.Default | InterpreterOptions.LambdaExpressions);
+			var list = new Parameter("list", new[] { 1, 2, 3 });
+			var value1 = new Parameter("value", 1);
+			var value2 = new Parameter("value", 2);
+			var expression = "list.Where(x => x > value)";
+			var lambda = target.Parse(expression, list, value1);
+			var result = lambda.Invoke(list, value2);
+			Assert.AreEqual(new[] { 3 }, result);
+		}
+
+		[Test]
+		public void GitHub_Issue_212_bis()
+		{
+			var target = new Interpreter(InterpreterOptions.Default | InterpreterOptions.LambdaExpressions);
+			var list = new Parameter("list", new[] { 1, 2, 3 });
+			var value1 = new Parameter("value", 1);
+			var value2 = new Parameter("value", 2);
+			var expression = "list.Where(x => x > value)";
+			var lambda = target.Parse(expression, (new[] { list, value1 }).Select(p => new Parameter(p.Name, p.Type)).ToArray());
+			var result = lambda.Invoke(list, value1);
+			Assert.AreEqual(new[] { 2, 3 }, result);
+		}
+
+		[Test]
+		public void GitHub_Issue_200_capture()
+		{
+			var target = new Interpreter(InterpreterOptions.Default | InterpreterOptions.LambdaExpressions);
+			var list = new List<string> { "ab", "cdc" };
+			target.SetVariable("myList", list);
+
+			// the str parameter is captured, and can be used in the nested lambda
+			var results = target.Eval("myList.Select(str => str.Select(c => str.Length))");
+			Assert.AreEqual(new[] { new[] { 2, 2 }, new[] { 3, 3, 3 } }, results);
+		}
+
+		[Test]
+		public void Lambda_Issue_256()
+		{
+			ICollection<BonusMatrix> annualBonus = new List<BonusMatrix> {
+				new BonusMatrix() { Grade = 1, BonusFactor = 7 },
+				new BonusMatrix() { Grade = 2, BonusFactor = 5.5 },
+				new BonusMatrix() { Grade = 3, BonusFactor = 4 },
+				new BonusMatrix() { Grade = 4, BonusFactor = 3.5 },
+				new BonusMatrix() { Grade = 5, BonusFactor = 3 }
+			};
+
+			ICollection<Employee> employees = new List<Employee> {
+				new Employee() { Id = "01", Name = "A", Grade = 5, Salary = 20000}, //bonus = 20000 * 7   = 60000
+                new Employee() { Id = "02", Name = "B", Grade = 5, Salary = 18000}, //bonus = 18000 * 7   = 54000
+                new Employee() { Id = "03", Name = "C", Grade = 4, Salary = 12000}, //bonus = 12000 * 5.5 = 42000
+                new Employee() { Id = "04", Name = "D", Grade = 4, Salary = 10000}, //bonus = 10000 * 5.5 = 35000
+                new Employee() { Id = "05", Name = "E", Grade = 3, Salary = 8500},  //bonus = 8500  * 4   = 34000
+                new Employee() { Id = "06", Name = "F", Grade = 3, Salary = 8000},  //bonus = 8000  * 4   = 32000
+                new Employee() { Id = "07", Name = "G", Grade = 2, Salary = 5000},  //bonus = 5000  * 3.5 = 27500
+                new Employee() { Id = "08", Name = "H", Grade = 2, Salary = 4750},  //bonus = 4750  * 3.5 = 26125
+                new Employee() { Id = "09", Name = "I", Grade = 1, Salary = 3500},  //bonus = 3500  * 3   = 24500
+                new Employee() { Id = "10", Name = "J", Grade = 1, Salary = 3250}   //bonus = 3250  * 3   = 22750
+            };
+
+			var interpreter = new Interpreter(InterpreterOptions.LambdaExpressions | InterpreterOptions.Default);
+			interpreter.SetVariable(nameof(annualBonus), annualBonus);
+			interpreter.SetVariable(nameof(employees), employees);
+
+			var totalBonus = employees.Sum(x => x.Salary * (annualBonus.SingleOrDefault(y => y.Grade == x.Grade).BonusFactor)); //total = 357875
+
+			var evalSum = interpreter.Eval("employees.Sum(x => x.Salary * (annualBonus.SingleOrDefault(y => y.Grade == x.Grade).BonusFactor))");
+			Assert.AreEqual(totalBonus, evalSum);
+		}
+
+		public class Employee
+		{
+			public string Id { get; set; }
+			public string Name { get; set; }
+			public int Grade { get; set; }
+			public double Salary { get; set; }
+		}
+
+		public class BonusMatrix
+		{
+			public int Grade { get; set; }
+			public double BonusFactor { get; set; }
+		}
+
+		[Test]
+		public void Lambda_Issue_259()
+		{
+			var options = InterpreterOptions.Default | InterpreterOptions.LambdaExpressions;
+			var interpreter = new Interpreter(options);
+			interpreter.SetVariable("courseList", new[] { new { PageName = "Test" } });
+			interpreter.Reference(typeof(PageType));
+
+			var results = interpreter.Eval<IEnumerable<PageType>>(@"courseList.Select(x => new PageType() { PageName = x.PageName, VisualCount = 5 })");
+			Assert.AreEqual(1, results.Count());
+
+			var result = results.Single();
+			Assert.AreEqual("Test", result.PageName);
+			Assert.AreEqual(5, result.VisualCount);
+		}
+
+		public class PageType
+		{
+			public string PageName { get; set; }
+			public int VisualCount { get; set; }
+		}
+
+		[Test]
+		public void GitHub_Issue_261()
+		{
+			var target = new Interpreter();
+			target.Reference(typeof(RegexOptions));
+			target.Reference(typeof(DateTimeKind));
+
+			var result = target.Eval<RegexOptions>("~RegexOptions.None");
+			Assert.AreEqual(~RegexOptions.None, result);
+
+			// DateTimeKind doesn't have the Flags attribute: the bitwise operation returns an integer
+			var result2 = target.Eval<DateTimeKind>("~DateTimeKind.Local");
+			Assert.AreEqual((DateTimeKind)(-3), result2);
+		}
+
+		[Test]
+		public void GitHub_Issue_262()
+		{
+			var list = new List<int> { 10, 30, 4 };
+
+			var options = InterpreterOptions.Default | InterpreterOptions.LambdaExpressions;
+			var interpreter = new Interpreter(options);
+			interpreter.SetVariable("b", new Functions());
+			interpreter.SetVariable("list", list);
+
+			var results = interpreter.Eval<List<int>>(@"b.Add(list, (int t) => t + 10)");
+			Assert.AreEqual(new List<int> { 20, 40, 14 }, results);
+
+			// ensure that list, t are not parsed as two arguments of a lambda expression
+			results = interpreter.Eval<List<int>>(@"b.Add(list, t => t + 10)");
+			Assert.AreEqual(new List<int> { 20, 40, 14 }, results);
+		}
+
+		public class Functions
+		{
+			public List<int> Add(List<int> list, Func<int, int> transform)
+			{
+				return list.Select(i => transform(i)).ToList();
+			}
+		}
+
+		[Test]
+		[TestCase("0, null, 0, 0")]
+		[TestCase("null, null, 0, 0")]
+		[TestCase("new object[] { null, null, null, null }")]
+		public void GitHub_Issue_263(string paramsArguments)
+		{
+			var interpreter = new Interpreter();
+			interpreter.Reference(typeof(Utils));
+
+			Assert.Throws<NullReferenceException>(() => interpreter.Eval<int>("Utils.ParamArrayObjects(null)"));
+
+			var result = interpreter.Eval<int>($"Utils.ParamArrayObjects({paramsArguments})");
+			Assert.AreEqual(4, result);
+		}
+
+		[Test]
+		public void GitHub_Issue_276()
+		{
+			var interpreter = new Interpreter();
+
+			var result = interpreter.Eval<bool>("((int?)5)>((double?)4)");
+			Assert.IsTrue(result);
+		}
+
+		[Test]
+		public void GitHub_Issue_287()
+		{
+			var interpreter = new Interpreter();
+			interpreter.Reference(typeof(IEnumerable<>));
+
+			object str = "test";
+			interpreter.SetVariable("str", str, typeof(object));
+
+			Assert.AreEqual(string.IsNullOrEmpty(str as string), interpreter.Eval("string.IsNullOrEmpty(str as string)"));
+			Assert.AreEqual(str is string, interpreter.Eval("str is string"));
+			Assert.AreEqual(str is int?, interpreter.Eval("str is int?"));
+			Assert.AreEqual(str is int[], interpreter.Eval("(str is int[])"));
+			Assert.AreEqual(str is int?[], interpreter.Eval("(str is int?[])"));
+			Assert.AreEqual(str is int?[][], interpreter.Eval("(str is int?[][])"));
+			Assert.AreEqual(str is IEnumerable<int>[][], interpreter.Eval("(str is IEnumerable<int>[][])"));
+			Assert.AreEqual(str is IEnumerable<int?>[][], interpreter.Eval("(str is IEnumerable<int?>[][])"));
+			Assert.AreEqual(str is IEnumerable<int[]>[][], interpreter.Eval("(str is IEnumerable<int[]>[][])"));
+			Assert.AreEqual(str is IEnumerable<int?[][]>[][], interpreter.Eval("(str is IEnumerable<int?[][]>[][])"));
+		}
+
+		private class Npc
+		{
+			public int money { get; set; }
+		}
+
+		[Test]
+		public void GitHub_Issue_292()
+		{
+			var interpreter = new Interpreter(InterpreterOptions.LambdaExpressions);
+
+			var testnpcs = new List<Npc>();
+			for (var i = 0; i < 5; i++)
+				testnpcs.Add(new Npc { money = 0 });
+
+			interpreter.Reference(typeof(GithubIssuesTestExtensionsMethods));
+			interpreter.SetVariable("NearNpcs", testnpcs);
+
+			var func = interpreter.ParseAsDelegate<Action>("NearNpcs.ActionToAll(n => n.money = 10)");
+			func.Invoke();
+
+			Assert.IsTrue(testnpcs.All(n => n.money == 10));
+		}
+
+		[Test]
+		[Ignore("The fix suggested in #296 break other use cases, so let's ignore this test for now")]
+		public void GitHub_Issue_295()
+		{
+			var evaluator = new Interpreter();
+
+			// create path helper functions in expressions...
+			Func<string, string, string> pathCombine = string.Concat;
+			evaluator.SetFunction("StringConcat", pathCombine);
+
+			// add a GlobalSettings dynamic object...
+			dynamic globalSettings = new ExpandoObject();
+			globalSettings.MyTestPath = "C:\\delme\\";
+			evaluator.SetVariable("GlobalSettings", globalSettings);
+
+			var works = (string)evaluator.Eval("StringConcat((string)GlobalSettings.MyTestPath,\"test.txt\")");
+			Assert.That(works, Is.EqualTo("C:\\delme\\test.txt"));
+
+			var doesntWork = (string)evaluator.Eval("StringConcat(GlobalSettings.MyTestPath,\"test.txt\")");
+			Assert.That(doesntWork, Is.EqualTo("C:\\delme\\test.txt"));
+		}
+
+		#region GitHub_Issue_305
+
+		public class _305_A
+		{
+			public string this[int index] => "some string";
+		}
+
+		public class _305_B : _305_A
+		{
+			public new int this[int index] => 25;
+		}
+
+		[Test]
+		public void GitHub_Issue_305()
+		{
+			var b = new _305_B();
+
+			var interpreter = new Interpreter();
+			var lambda = interpreter.Parse("this[0]", new Parameter("this", b));
+			var res = lambda.Invoke(b);
+
+			Assert.AreEqual(25, res);
+		}
+
+		#endregion
+
+		[Test]
+		public void GitHub_Issue_311()
+		{
+			var a = "AABB";
+
+			var interpreter1 = new Interpreter();
+			interpreter1.SetVariable("a", a);
+			Assert.AreEqual("AA", interpreter1.Eval("a.Substring(0, 2)"));
+
+			var interpreter2 = new Interpreter().SetDefaultNumberType(DefaultNumberType.Decimal);
+			interpreter2.SetVariable("a", a);
+			// expected to throw because Substring is not defined for decimal
+			Assert.Throws<NoApplicableMethodException>(() => interpreter2.Eval("a.Substring(0, 2)"));
+			// It works if we cast to int
+			Assert.AreEqual("AA", interpreter2.Eval("a.Substring((int)0, (int)2)"));
+		}
+
+		[Test]
+		public void GitHub_Issue_314()
+		{
+			var interpreter = new Interpreter();
+
+			var exception1 = Assert.Throws<UnknownIdentifierException>(() => interpreter.Eval("b < 1"));
+			Assert.AreEqual("b", exception1.Identifier);
+
+			var exception2 = Assert.Throws<UnknownIdentifierException>(() => interpreter.Eval("b > 1"));
+			Assert.AreEqual("b", exception2.Identifier);
+		}
+
+		[Test]
+		public void GitHub_Issue_325()
+		{
+			var options = InterpreterOptions.Default | InterpreterOptions.LateBindObject;
+			var interpreter = new Interpreter(options);
+
+			var input = new
+			{
+				Prop1 = 4,
+			};
+
+			var expressionDelegate = interpreter.ParseAsDelegate<Func<object, bool>>($"input.Prop1 == null", "input");
+			Assert.IsFalse(expressionDelegate(input));
+		}
 	}
 
 	internal static class GithubIssuesTestExtensionsMethods
 	{
 		public static bool IsInFuture(this DateTimeOffset date) => date > DateTimeOffset.UtcNow;
+		public static void ActionToAll<T>(this IEnumerable<T> source, Action<T> action)
+		{
+			foreach (var item in source)
+				action(item);
+		}
 	}
 }
